@@ -39,19 +39,26 @@ class EngineASE(Engine):
 
     @classmethod
     def from_calculator_constructor(cls, molecule: Molecule, calculator, *args, **kwargs):
-        obj = cls(molecule, calculator(*args, **kwargs))
-        # A workaround to set the charge and spin multiplicity.
-        charge = kwargs.get("charge", 0)
-        initial_charges = np.zeros(len(obj.ase_atoms))
-        initial_charges[0] = charge
-        obj.ase_atoms.set_initial_charges(initial_charges)
-        mult = kwargs.get("mult", 1)
-        initial_spins = np.zeros(len(obj.ase_atoms))
-        initial_spins[0] = mult-1
-        obj.ase_atoms.set_initial_magnetic_moments(initial_spins)
-        # This stores the needed information to re-create the Engine from strings (for example when using Work Queue)
-        obj.calculator_import_path = calculator.__module__+'.'+calculator.__name__
-        obj.calculator_kwargs = kwargs
+        if calculator.__name__=='FAIRChemCalculator':
+            charge = kwargs.pop("charge", 0)
+            mult = kwargs.pop("mult", 1)
+            obj = cls(molecule, calculator(*args, **kwargs))
+            obj.ase_atoms.info["charge"]=charge
+            obj.ase_atoms.info["spin"] = mult
+        else:
+            obj = cls(molecule, calculator(*args, **kwargs))
+            # A workaround to set the charge and spin multiplicity.
+            charge = kwargs.get("charge", 0)
+            initial_charges = np.zeros(len(obj.ase_atoms))
+            initial_charges[0] = charge
+            obj.ase_atoms.set_initial_charges(initial_charges)
+            mult = kwargs.get("mult", 1)
+            initial_spins = np.zeros(len(obj.ase_atoms))
+            initial_spins[0] = mult-1
+            obj.ase_atoms.set_initial_magnetic_moments(initial_spins)
+            # This stores the needed information to re-create the Engine from strings (for example when using Work Queue)
+            obj.calculator_import_path = calculator.__module__+'.'+calculator.__name__
+            obj.calculator_kwargs = kwargs
         return obj
 
     @classmethod
@@ -61,19 +68,40 @@ class EngineASE(Engine):
         class_name = calculator_import.split(".")[-1]
 
         # import the module of the calculator
-        try:
+        if module_name=='fairchem.core' and class_name=='FAIRChemCalculator':
+            print('Using calculator from Fairchem-core')
             module = importlib.import_module(module_name)
-        except ModuleNotFoundError:
-            raise EngineError("ASE-calculator's module is not found: {}".format(class_name))
-
-        # class of the calculator
-        if hasattr(module, class_name):
             calc_class = getattr(module, class_name)
-        else:
-            raise EngineError("ASE-calculator's class ({}) not found in module {}".format(class_name, module_name))
+            from fairchem.core import pretrained_mlip
+            #basemodel = "uma-m-1p1"
+            basemodel = "uma-s-1p1"
+            #basemodel = "uma-s-1p2p1"
+            model_path='/groups/sterling/share_your_stuff/for_everyone/fairchem_models'
+            pretrained_mlip.CACHE_DIR = model_path
+            predictor = pretrained_mlip.get_predict_unit(basemodel,inference_settings='high-precision', cache_dir=model_path, device="cuda")
+            args = args + (predictor,)
+            kwargs["task_name"] = "omol"
+            print('Model loading and definitions of additional parameters completed')
 
-        if not issubclass(calc_class, Calculator):
-            raise EngineError("Not an ASE calculator class ({}) found in module ({})".format(class_name, module_name))
+            
+        else:
+            try:
+                module = importlib.import_module(module_name)
+            except ModuleNotFoundError:
+                #raise EngineError("ASE-calculator's module is not found: {}".format(class_name))
+                try:
+                    print('This path')
+                except ModuleNotFoundError:
+                    raise EngineError("ASE-calculator's module is not found: {}".format(class_name))
+
+            # class of the calculator
+            if hasattr(module, class_name):
+                calc_class = getattr(module, class_name)
+            else:
+                raise EngineError("ASE-calculator's class ({}) not found in module {}".format(class_name, module_name))
+
+            if not issubclass(calc_class, Calculator):
+                raise EngineError("Not an ASE calculator class ({}) found in module ({})".format(class_name, module_name))
 
         # construct from the constructor
         return cls.from_calculator_constructor(molecule, calc_class, *args, **kwargs)
